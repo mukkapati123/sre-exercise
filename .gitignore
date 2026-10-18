@@ -1,0 +1,32 @@
+# Terraform
+terraform.d/.terraform/
+terraform.d/**/.terraform/
+terraform.d/*.tfstate*
+terraform.d/**/*.tfstate*
+terraform.d/.terraform.lock.hcl
+terraform.d/**/.terraform.lock.hcl
+terraform.d/override.tf
+terraform.d/**/override.tf
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary
+temp/
+tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ansible
+*.retry

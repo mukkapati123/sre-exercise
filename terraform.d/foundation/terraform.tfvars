@@ -1,0 +1,6 @@
+aws_region     = "eu-west-1"
+aws_account_id = "524370972027"
+project_name   = "sre-exercise"
+environment    = "exercise"
+owner          = "SandeepMukkapati"
+vpc_cidr       = "10.0.0.0/21"
