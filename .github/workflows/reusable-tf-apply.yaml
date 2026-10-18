@@ -1,0 +1,168 @@
+name: Terraform Apply
+
+on:
+  workflow_call:
+    outputs:
+      ansible_log_s3_path:
+        description: "S3 path to Ansible logs"
+        value: ${{ jobs.terraform-apply.outputs.ansible_log_s3_path }}
+    
+    inputs:
+      workdir:
+        description: The directory path where Terraform commands will be executed
+        required: false
+        type: string
+        default: terraform.d
+
+      iam-role-arn:
+        description: IAM role ARN for OIDC authentication
+        required: true
+        type: string
+
+      role-session-name:
+        description: Role session name
+        required: false
+        type: string
+        default: ${{ github.run_id }}-terraform
+
+      terraform-version:
+        description: The version of Terraform to install
+        required: true
+        type: string
+
+      aws-region:
+        description: The AWS region where resources will be managed
+        default: eu-west-1
+        type: string
+        required: false
+
+      audience:
+        description: Audience for OIDC token
+        required: false
+        type: string
+        default: sts.amazonaws.com
+
+      runner-group:
+        description: GitHub Actions runner group
+        required: false
+        type: string
+        default: 'elsevier-standard-runners'
+
+      terraform-output-ansible-log:
+        description: Optional comma-separated list of Terraform output keys containing S3 bucket/key paths where Ansible logs are stored
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  terraform-apply:
+    runs-on:
+      group: ${{ inputs.runner-group }}
+    
+    outputs:
+      terraform_version: ${{ inputs.terraform-version }}
+      ansible_log_s3_path: ${{ steps.get_ansible_path.outputs.path }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.iam-role-arn }}
+          role-session-name: ${{ inputs.role-session-name }}
+          aws-region: ${{ inputs.aws-region }}
+          audience: ${{ inputs.audience }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        id: tf_init
+        env:
+          WORKDIR: ${{ inputs.workdir }}
+        run: |
+          terraform init -upgrade -backend-config=terraform.backend-config.tfvars
+        working-directory: ${{ env.WORKDIR }}
+
+      - name: Terraform Validate
+        id: tf_validate
+        env:
+          WORKDIR: ${{ inputs.workdir }}
+        run: terraform validate
+        working-directory: ${{ env.WORKDIR }}
+
+      - name: Terraform Plan
+        id: tf_plan
+        env:
+          WORKDIR: ${{ inputs.workdir }}
+        run: |
+          terraform plan -var-file=terraform.tfvars -no-color -out=tf.plan
+        working-directory: ${{ env.WORKDIR }}
+
+      - name: Terraform Apply
+        id: tf_apply
+        env:
+          WORKDIR: ${{ inputs.workdir }}
+        run: terraform apply -no-color tf.plan
+        working-directory: ${{ env.WORKDIR }}
+
+      - name: Capture terraform outputs
+        id: tf_output
+        if: always()
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          terraform output -json > terraform-output.json || echo "{}" > terraform-output.json
+
+      - name: Get Ansible log S3 path
+        id: get_ansible_path
+        if: always()
+        working-directory: ${{ inputs.workdir }}
+        env:
+          ANSIBLE_OUTPUT_KEYS: ${{ inputs.terraform-output-ansible-log }}
+        run: |
+          if [ -f terraform-output.json ]; then
+            S3_PATHS=""
+            IFS=',' read -ra KEYS <<< "$ANSIBLE_OUTPUT_KEYS"
+            for key in "${KEYS[@]}"; do
+              key=$(echo "$key" | xargs)  # trim whitespace
+              # Validate key name to prevent injection
+              if [[ ! "$key" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                echo "Invalid terraform output key format: ${key}. Skipping."
+                continue
+              fi
+              if [ -n "$key" ]; then
+                S3_PATH=$(jq -r --arg k "$key" '.[$k].value // ""' terraform-output.json)
+                # Validate S3 path format to prevent injection
+                if [ -n "$S3_PATH" ] && [[ "$S3_PATH" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+                  if [ -z "$S3_PATHS" ]; then
+                    S3_PATHS="$S3_PATH"
+                  else
+                    S3_PATHS="${S3_PATHS},${S3_PATH}"
+                  fi
+                  echo "Found Ansible log S3 path for $key: ${S3_PATH}"
+                fi
+              fi
+            done
+            echo "path=${S3_PATHS}" >> $GITHUB_OUTPUT
+          else
+            echo "path=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fail job if terraform apply failed
+        if: steps.tf_apply.outcome == 'failure'
+        run: |
+          echo "Terraform apply failed. Check logs above for details."
+          exit 1

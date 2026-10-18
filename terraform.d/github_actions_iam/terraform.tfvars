@@ -1,0 +1,7 @@
+aws_region     = "eu-west-1"
+aws_account_id = "524370972027"
+project_name   = "sre-exercise"
+environment    = "exercise"
+owner          = "SandeepMukkapati"
+github_org     = "mukkapati123"
+github_repo    = "sre-exercise"
