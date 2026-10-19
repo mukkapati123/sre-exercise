@@ -3,7 +3,7 @@ name: Deploy Terraform
 on:
   push:
     branches:
-      - main
+      - SRE-2
  
 permissions:
   id-token: write
@@ -15,7 +15,7 @@ jobs:
     uses: ./.github/workflows/reusable-tf-apply.yaml
     with:
       workdir: terraform.d/foundation
-      terraform-version: '1.15.0'
+      terraform-version: '1.15.9'
       aws-region: eu-west-1
       iam-role-arn: 'arn:aws:iam::524370972027:role/sre-exercise-github-actions'
     secrets: inherit

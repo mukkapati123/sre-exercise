@@ -1,12 +1,11 @@
 # Permissions for the foundation module: VPC, subnets, gateways, routing.
 data "aws_iam_policy_document" "terraform_foundation" {
   statement {
-    sid    = "VPCManagement"
+    sid    = "VpcManagement"
     effect = "Allow"
     actions = [
       "ec2:CreateVpc",
       "ec2:DeleteVpc",
-      "ec2:DescribeVpcs",
       "ec2:ModifyVpcAttribute",
       "ec2:AssociateVpcCidrBlock",
       "ec2:DisassociateVpcCidrBlock",
@@ -20,7 +19,6 @@ data "aws_iam_policy_document" "terraform_foundation" {
     actions = [
       "ec2:CreateSubnet",
       "ec2:DeleteSubnet",
-      "ec2:DescribeSubnets",
       "ec2:ModifySubnetAttribute",
     ]
     resources = [
@@ -35,7 +33,6 @@ data "aws_iam_policy_document" "terraform_foundation" {
     actions = [
       "ec2:CreateInternetGateway",
       "ec2:DeleteInternetGateway",
-      "ec2:DescribeInternetGateways",
       "ec2:AttachInternetGateway",
       "ec2:DetachInternetGateway",
     ]
@@ -45,47 +42,53 @@ data "aws_iam_policy_document" "terraform_foundation" {
     ]
   }
 
+  # CreateNatGateway is authorised against the gateway, the subnet it lands in
+  # and the EIP it consumes, so all three have to be listed here.
   statement {
-    sid    = "NATGatewayManagement"
+    sid    = "NatGatewayManagement"
     effect = "Allow"
     actions = [
       "ec2:CreateNatGateway",
       "ec2:DeleteNatGateway",
-      "ec2:DescribeNatGateways",
-      "ec2:CreateRouteTable",
-      "ec2:DeleteRouteTable",
-      "ec2:DescribeRouteTables",
     ]
     resources = [
-      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:nat-gateway/*",
-      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:route-table/*",
-      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:vpc/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:natgateway/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:subnet/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:elastic-ip/*",
     ]
   }
 
+  # AllocateAddress cannot be scoped to an ARN: the address does not exist when
+  # the call is authorised, so the service authorization reference lists no
+  # resource type for it and it has to be granted on "*".
   statement {
-    sid    = "ElasticIPManagement"
-    effect = "Allow"
-    actions = [
-      "ec2:AllocateAddress",
-      "ec2:ReleaseAddress",
-      "ec2:DescribeAddresses",
-      "ec2:AssociateAddress",
-      "ec2:DisassociateAddress",
-    ]
+    sid       = "ElasticIpAllocation"
+    effect    = "Allow"
+    actions   = ["ec2:AllocateAddress"]
     resources = ["*"]
   }
 
   statement {
-    sid    = "RouteManagement"
+    sid       = "ElasticIpManagement"
+    effect    = "Allow"
+    actions   = ["ec2:ReleaseAddress"]
+    resources = ["arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:elastic-ip/*"]
+  }
+
+  statement {
+    sid    = "RouteTableManagement"
     effect = "Allow"
     actions = [
+      "ec2:CreateRouteTable",
+      "ec2:DeleteRouteTable",
       "ec2:CreateRoute",
       "ec2:DeleteRoute",
       "ec2:ReplaceRoute",
-      "ec2:DescribeRouteTables",
     ]
-    resources = ["arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:route-table/*"]
+    resources = [
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:route-table/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:vpc/*",
+    ]
   }
 
   statement {
@@ -94,7 +97,6 @@ data "aws_iam_policy_document" "terraform_foundation" {
     actions = [
       "ec2:AssociateRouteTable",
       "ec2:DisassociateRouteTable",
-      "ec2:DescribeRouteTables",
     ]
     resources = [
       "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:route-table/*",
@@ -102,10 +104,32 @@ data "aws_iam_policy_document" "terraform_foundation" {
     ]
   }
 
+  # Tagging is a separate authorisation check from the create call itself, and it
+  # is evaluated against the resource being tagged. Every type the foundation
+  # creates has to be listed or tag-on-create fails with UnauthorizedOperation.
   statement {
-    sid       = "AvailabilityZoneLookup"
+    sid    = "ResourceTagging"
+    effect = "Allow"
+    actions = [
+      "ec2:CreateTags",
+      "ec2:DeleteTags",
+    ]
+    resources = [
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:vpc/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:subnet/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:internet-gateway/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:natgateway/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:elastic-ip/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:route-table/*",
+    ]
+  }
+
+  # EC2 Describe calls do not support resource-level permissions; scoping them to
+  # an ARN grants nothing, so they have to sit in their own "*" statement.
+  statement {
+    sid       = "DescribeNetworkResources"
     effect    = "Allow"
-    actions   = ["ec2:DescribeAvailabilityZones"]
+    actions   = ["ec2:Describe*"]
     resources = ["*"]
   }
 }
