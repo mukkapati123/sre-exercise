@@ -1,4 +1,3 @@
-# Permissions for the foundation module: VPC, subnets, gateways, routing.
 data "aws_iam_policy_document" "terraform_foundation" {
   statement {
     sid    = "VpcManagement"
@@ -42,8 +41,6 @@ data "aws_iam_policy_document" "terraform_foundation" {
     ]
   }
 
-  # CreateNatGateway is authorised against the gateway, the subnet it lands in
-  # and the EIP it consumes, so all three have to be listed here.
   statement {
     sid    = "NatGatewayManagement"
     effect = "Allow"
@@ -58,9 +55,6 @@ data "aws_iam_policy_document" "terraform_foundation" {
     ]
   }
 
-  # AllocateAddress cannot be scoped to an ARN: the address does not exist when
-  # the call is authorised, so the service authorization reference lists no
-  # resource type for it and it has to be granted on "*".
   statement {
     sid       = "ElasticIpAllocation"
     effect    = "Allow"
@@ -104,9 +98,6 @@ data "aws_iam_policy_document" "terraform_foundation" {
     ]
   }
 
-  # Tagging is a separate authorisation check from the create call itself, and it
-  # is evaluated against the resource being tagged. Every type the foundation
-  # creates has to be listed or tag-on-create fails with UnauthorizedOperation.
   statement {
     sid    = "ResourceTagging"
     effect = "Allow"
@@ -124,8 +115,6 @@ data "aws_iam_policy_document" "terraform_foundation" {
     ]
   }
 
-  # EC2 Describe calls do not support resource-level permissions; scoping them to
-  # an ARN grants nothing, so they have to sit in their own "*" statement.
   statement {
     sid       = "DescribeNetworkResources"
     effect    = "Allow"
@@ -141,33 +130,41 @@ resource "aws_iam_policy" "terraform_foundation" {
   tags        = local.common_tags
 }
 
-# Permissions for the compute layer. Covers resources not yet in this repo
-# (ALB, ASG, alarms, secrets) so the role does not need editing per module.
 data "aws_iam_policy_document" "terraform_infrastructure" {
   statement {
-    sid    = "EC2Management"
+    sid    = "ComputeManagement"
     effect = "Allow"
     actions = [
       "ec2:RunInstances",
       "ec2:TerminateInstances",
-      "ec2:DescribeInstances",
-      "ec2:DescribeInstanceStatus",
+      "ec2:StartInstances",
+      "ec2:StopInstances",
       "ec2:ModifyInstanceAttribute",
-      "ec2:CreateTags",
-      "ec2:DeleteTags",
+      "ec2:ModifyInstanceMetadataOptions",
     ]
     resources = [
       "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:instance/*",
       "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:volume/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:network-interface/*",
       "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:subnet/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:key-pair/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*",
+      "arn:aws:ec2:${var.aws_region}::image/*",
     ]
   }
 
   statement {
-    sid       = "ImageLookup"
-    effect    = "Allow"
-    actions   = ["ec2:DescribeImages", "ec2:DescribeImageAttribute"]
-    resources = ["*"]
+    sid    = "LaunchTemplateManagement"
+    effect = "Allow"
+    actions = [
+      "ec2:CreateLaunchTemplate",
+      "ec2:DeleteLaunchTemplate",
+      "ec2:CreateLaunchTemplateVersion",
+      "ec2:DeleteLaunchTemplateVersions",
+      "ec2:ModifyLaunchTemplate",
+    ]
+    resources = ["arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*"]
   }
 
   statement {
@@ -176,35 +173,62 @@ data "aws_iam_policy_document" "terraform_infrastructure" {
     actions = [
       "ec2:CreateSecurityGroup",
       "ec2:DeleteSecurityGroup",
-      "ec2:DescribeSecurityGroups",
       "ec2:AuthorizeSecurityGroupIngress",
       "ec2:AuthorizeSecurityGroupEgress",
       "ec2:RevokeSecurityGroupIngress",
       "ec2:RevokeSecurityGroupEgress",
       "ec2:ModifySecurityGroupRules",
+      "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+      "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
     ]
     resources = [
       "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group-rule/*",
       "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:vpc/*",
     ]
   }
 
   statement {
-    sid    = "IAMRoleManagement"
+    sid    = "ComputeTagging"
+    effect = "Allow"
+    actions = [
+      "ec2:CreateTags",
+      "ec2:DeleteTags",
+    ]
+    resources = [
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:instance/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:volume/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:network-interface/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group-rule/*",
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*",
+    ]
+  }
+
+  statement {
+    sid    = "InstanceRoleManagement"
     effect = "Allow"
     actions = [
       "iam:CreateRole",
       "iam:DeleteRole",
       "iam:GetRole",
+      "iam:TagRole",
+      "iam:UntagRole",
       "iam:ListRolePolicies",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
       "iam:PutRolePolicy",
       "iam:DeleteRolePolicy",
       "iam:AttachRolePolicy",
       "iam:DetachRolePolicy",
       "iam:CreateInstanceProfile",
       "iam:DeleteInstanceProfile",
+      "iam:GetInstanceProfile",
+      "iam:TagInstanceProfile",
       "iam:AddRoleToInstanceProfile",
       "iam:RemoveRoleFromInstanceProfile",
+      "iam:ListRoleTags",
+      "iam:ListInstanceProfileTags",
     ]
     resources = [
       "arn:aws:iam::${var.aws_account_id}:role/${var.project_name}-*",
@@ -213,26 +237,49 @@ data "aws_iam_policy_document" "terraform_infrastructure" {
   }
 
   statement {
+    sid       = "PassInstanceRole"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = ["arn:aws:iam::${var.aws_account_id}:role/${var.project_name}-*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ec2.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid       = "ServiceLinkedRoles"
+    effect    = "Allow"
+    actions   = ["iam:CreateServiceLinkedRole"]
+    resources = ["arn:aws:iam::${var.aws_account_id}:role/aws-service-role/*"]
+  }
+
+  statement {
     sid    = "LoadBalancerManagement"
     effect = "Allow"
     actions = [
       "elasticloadbalancing:CreateLoadBalancer",
       "elasticloadbalancing:DeleteLoadBalancer",
-      "elasticloadbalancing:DescribeLoadBalancers",
       "elasticloadbalancing:CreateTargetGroup",
       "elasticloadbalancing:DeleteTargetGroup",
-      "elasticloadbalancing:DescribeTargetGroups",
       "elasticloadbalancing:CreateListener",
       "elasticloadbalancing:DeleteListener",
-      "elasticloadbalancing:DescribeListeners",
+      "elasticloadbalancing:ModifyListener",
       "elasticloadbalancing:RegisterTargets",
       "elasticloadbalancing:DeregisterTargets",
       "elasticloadbalancing:ModifyLoadBalancerAttributes",
       "elasticloadbalancing:ModifyTargetGroupAttributes",
+      "elasticloadbalancing:SetSecurityGroups",
+      "elasticloadbalancing:SetSubnets",
+      "elasticloadbalancing:AddTags",
+      "elasticloadbalancing:RemoveTags",
     ]
     resources = [
       "arn:aws:elasticloadbalancing:${var.aws_region}:${var.aws_account_id}:loadbalancer/app/*",
       "arn:aws:elasticloadbalancing:${var.aws_region}:${var.aws_account_id}:targetgroup/*",
+      "arn:aws:elasticloadbalancing:${var.aws_region}:${var.aws_account_id}:listener/app/*",
     ]
   }
 
@@ -242,20 +289,16 @@ data "aws_iam_policy_document" "terraform_infrastructure" {
     actions = [
       "autoscaling:CreateAutoScalingGroup",
       "autoscaling:DeleteAutoScalingGroup",
-      "autoscaling:DescribeAutoScalingGroups",
       "autoscaling:UpdateAutoScalingGroup",
-      "autoscaling:CreateLaunchConfiguration",
-      "autoscaling:DeleteLaunchConfiguration",
-      "autoscaling:DescribeLaunchConfigurations",
-      "ec2:CreateLaunchTemplate",
-      "ec2:DeleteLaunchTemplate",
-      "ec2:DescribeLaunchTemplates",
-      "ec2:DescribeLaunchTemplateVersions",
+      "autoscaling:SetDesiredCapacity",
+      "autoscaling:AttachLoadBalancerTargetGroups",
+      "autoscaling:DetachLoadBalancerTargetGroups",
+      "autoscaling:PutScalingPolicy",
+      "autoscaling:DeletePolicy",
+      "autoscaling:CreateOrUpdateTags",
+      "autoscaling:DeleteTags",
     ]
-    resources = [
-      "arn:aws:autoscaling:${var.aws_region}:${var.aws_account_id}:autoScalingGroup:*:autoScalingGroupName/*",
-      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*",
-    ]
+    resources = ["arn:aws:autoscaling:${var.aws_region}:${var.aws_account_id}:autoScalingGroup:*:autoScalingGroupName/${var.project_name}-*"]
   }
 
   statement {
@@ -264,21 +307,41 @@ data "aws_iam_policy_document" "terraform_infrastructure" {
     actions = [
       "cloudwatch:PutMetricAlarm",
       "cloudwatch:DeleteAlarms",
-      "cloudwatch:DescribeAlarms",
+      "cloudwatch:ListTagsForResource",
+      "cloudwatch:TagResource",
+      "cloudwatch:UntagResource",
     ]
-    resources = ["arn:aws:cloudwatch:${var.aws_region}:${var.aws_account_id}:alarm:*"]
+    resources = ["arn:aws:cloudwatch:${var.aws_region}:${var.aws_account_id}:alarm:${var.project_name}-*"]
   }
 
   statement {
-    sid    = "SNSManagement"
+    sid    = "LogGroupManagement"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:DeleteLogGroup",
+      "logs:PutRetentionPolicy",
+      "logs:DeleteRetentionPolicy",
+      "logs:TagResource",
+      "logs:UntagResource",
+      "logs:ListTagsForResource",
+      "logs:ListTagsLogGroup",
+    ]
+    resources = ["arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:/${var.project_name}/*"]
+  }
+
+  statement {
+    sid    = "SnsManagement"
     effect = "Allow"
     actions = [
       "sns:CreateTopic",
       "sns:DeleteTopic",
-      "sns:GetTopicAttributes",
       "sns:SetTopicAttributes",
       "sns:Subscribe",
       "sns:Unsubscribe",
+      "sns:TagResource",
+      "sns:UntagResource",
+      "sns:ListTagsForResource",
     ]
     resources = ["arn:aws:sns:${var.aws_region}:${var.aws_account_id}:${var.project_name}-*"]
   }
@@ -295,6 +358,29 @@ data "aws_iam_policy_document" "terraform_infrastructure" {
     ]
     resources = ["arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:${var.project_name}-*"]
   }
+
+  statement {
+    sid    = "ReadOnlyLookups"
+    effect = "Allow"
+    actions = [
+      "ec2:Describe*",
+      "ec2:GetSecurityGroupsForVpc",
+      "elasticloadbalancing:Describe*",
+      "autoscaling:Describe*",
+      "cloudwatch:DescribeAlarms",
+      "cloudwatch:GetMetricData",
+      "cloudwatch:ListMetrics",
+      "logs:DescribeLogGroups",
+      "sns:GetTopicAttributes",
+      "sns:ListSubscriptionsByTopic",
+      "sns:GetSubscriptionAttributes",
+      "iam:ListRoles",
+      "iam:ListPolicies",
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+    ]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "terraform_infrastructure" {
@@ -304,7 +390,6 @@ resource "aws_iam_policy" "terraform_infrastructure" {
   tags        = local.common_tags
 }
 
-# Permissions for the S3 backend and its DynamoDB lock table.
 data "aws_iam_policy_document" "terraform_state" {
   statement {
     sid    = "S3StateAccess"
@@ -320,22 +405,11 @@ data "aws_iam_policy_document" "terraform_state" {
       "arn:aws:s3:::${var.state_bucket}/*",
     ]
   }
-
-  statement {
-    sid    = "DynamoDBLocking"
-    effect = "Allow"
-    actions = [
-      "dynamodb:GetItem",
-      "dynamodb:PutItem",
-      "dynamodb:DeleteItem",
-    ]
-    resources = ["arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${var.state_lock_table}"]
-  }
 }
 
 resource "aws_iam_policy" "terraform_state" {
   name        = "${var.project_name}-terraform-state"
-  description = "Remote state and locking permissions for the GitHub Actions role"
+  description = "Remote state permissions for the GitHub Actions role"
   policy      = data.aws_iam_policy_document.terraform_state.json
   tags        = local.common_tags
 }

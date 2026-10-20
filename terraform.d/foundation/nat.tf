@@ -1,6 +1,3 @@
-# Two NAT gateways rather than one: a single NAT is a per-AZ failure domain, and
-# losing it takes egress down for every private subnet. Two is the cheapest
-# option that survives one AZ going away.
 resource "aws_eip" "nat" {
   count  = 2
   domain = "vpc"

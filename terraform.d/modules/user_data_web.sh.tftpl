@@ -1,0 +1,18 @@
+${common}
+
+dnf install -y python3-pip git
+python3 -m pip install ansible-core
+
+export PATH="/usr/local/bin:$PATH"
+
+export ANSIBLE_CONFIG=/opt/sre-exercise/ansible.d/ansible.cfg
+export ANSIBLE_ROLES_PATH=/opt/sre-exercise/ansible.d/roles
+
+ansible-pull \
+  --url "${repo_url}" \
+  --checkout "${repo_branch}" \
+  --directory /opt/sre-exercise \
+  --clean \
+  ansible.d/playbooks/web.yml
+
+# Hash of the Ansible content at plan time: ${content_hash}

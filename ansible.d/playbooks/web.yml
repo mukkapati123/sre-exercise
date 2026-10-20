@@ -1,0 +1,8 @@
+---
+- name: Configure the web tier
+  hosts: localhost
+  connection: local
+  become: true
+
+  roles:
+    - web

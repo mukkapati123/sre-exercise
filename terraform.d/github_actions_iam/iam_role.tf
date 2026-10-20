@@ -1,6 +1,3 @@
-# The sub condition is the only thing standing between this role and any repo on
-# GitHub, so it is pinned to a single branch of a single repo. Widen it to
-# "repo:org/repo:*" only if pull request workflows need to assume the role too.
 data "aws_iam_policy_document" "github_actions_trust" {
   statement {
     effect  = "Allow"
@@ -20,7 +17,10 @@ data "aws_iam_policy_document" "github_actions_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:mukkapati123@*/sre-exercise@*:ref:refs/heads/*"]
+      values = [
+        "repo:${var.github_org}@*/${var.github_repo}@*:ref:refs/heads/*",
+        "repo:${var.github_org}@*/${var.github_repo}@*:environment:*",
+      ]
     }
   }
 }

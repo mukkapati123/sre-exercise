@@ -1,6 +1,3 @@
-# Subnets are carved out of var.vpc_cidr as /24s: public takes the first two
-# blocks, private takes the next three. element() wraps the AZ list so the
-# layout still works in regions that expose fewer than three AZs.
 resource "aws_subnet" "public" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id

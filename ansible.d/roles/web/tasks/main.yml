@@ -1,0 +1,28 @@
+---
+- name: Install nginx
+  ansible.builtin.dnf:
+    name: nginx
+    state: present
+
+- name: Deploy the Hello World page
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: /usr/share/nginx/html/index.html
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Deploy the health check endpoint
+  ansible.builtin.copy:
+    content: "ok\n"
+    dest: /usr/share/nginx/html/health
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start nginx and enable it at boot
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
