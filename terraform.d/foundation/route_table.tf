@@ -19,9 +19,6 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public[count.index].id
 }
 
-# Three private subnets share two NAT gateways, so the third subnet doubles up on
-# the first NAT. Cross-AZ NAT traffic costs extra and the third subnet loses
-# egress if that AZ fails - acceptable here, revisit if it carries real traffic.
 resource "aws_route_table" "private" {
   count  = 3
   vpc_id = aws_vpc.main.id

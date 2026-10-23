@@ -5,8 +5,8 @@ on:
     outputs:
       ansible_log_s3_path:
         description: "S3 path to Ansible logs"
-        value: ${{ jobs.terraform-apply.outputs.ansible_log_s3_path }}
-    
+        value: ${{ jobs.apply.outputs.ansible_log_s3_path }}
+
     inputs:
       workdir:
         description: The directory path where Terraform commands will be executed
@@ -54,20 +54,51 @@ on:
         type: string
         default: ''
 
+      environment:
+        description: GitHub Environment gating the apply job. Required reviewers on that environment are what hold the apply after the plan has been published.
+        required: false
+        type: string
+        default: ''
+
+      smoke-test-output:
+        description: Terraform output holding a URL to curl once the apply finishes. Empty disables the check.
+        required: false
+        type: string
+        default: ''
+
+      smoke-test-expect:
+        description: String the smoke test expects to find in the response body
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      admin_cidr:
+        description: Operator address allowed to SSH to the bastion, passed to Terraform as TF_VAR_admin_cidr
+        required: false
+
 permissions:
   id-token: write
   contents: write
   pull-requests: write
 
 jobs:
-  terraform-apply:
+  plan:
     runs-on: ${{ inputs.runner-group }}
-    
+
+    env:
+      TF_VAR_admin_cidr: ${{ secrets.admin_cidr }}
+
     outputs:
-      terraform_version: ${{ inputs.terraform-version }}
-      ansible_log_s3_path: ${{ steps.get_ansible_path.outputs.path }}
+      plan_artifact: ${{ steps.names.outputs.artifact }}
 
     steps:
+      - name: Derive plan artifact name
+        id: names
+        env:
+          WORKDIR: ${{ inputs.workdir }}
+        run: echo "artifact=tf-plan-${GITHUB_RUN_ID}-${WORKDIR//\//-}" >> "$GITHUB_OUTPUT"
+
       - name: Debug OIDC Environment
         run: |
           echo "=== OIDC Environment Variables ==="
@@ -76,60 +107,89 @@ jobs:
           echo "ACTIONS_ID_TOKEN_REQUEST_URL length: ${#ACTIONS_ID_TOKEN_REQUEST_URL}"
           echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN length: ${#ACTIONS_ID_TOKEN_REQUEST_TOKEN}"
 
-      # Diagnostic steps for OIDC trust failures: they surface the claims AWS
-      # matches against the role trust policy, which is the fastest way to spot a
-      # sub or aud mismatch. Remove them once OIDC works.
-      - name: Get OIDC Token
-        id: get-token
-        env:
-          AUDIENCE: ${{ inputs.audience }}
-        run: |
-          RESPONSE=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")
-
-          echo "Response: $RESPONSE"
-
-          TOKEN=$(echo "$RESPONSE" | jq -r '.value')
-
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "Failed to retrieve OIDC token"
-            exit 1
-          fi
-          echo "::add-mask::${TOKEN}"
-          echo "token=${TOKEN}" >> $GITHUB_OUTPUT
-
-      - name: Decode OIDC Token Claims
-        env:
-          TOKEN: ${{ steps.get-token.outputs.token }}
-        run: |
-          PAYLOAD=$(echo "$TOKEN" | cut -d'.' -f2 | tr '_-' '/+')
-          while [ $(( ${#PAYLOAD} % 4 )) -ne 0 ]; do PAYLOAD="${PAYLOAD}="; done
-          echo "=== OIDC Token Claims ==="
-          echo "$PAYLOAD" | base64 -d | jq '{sub, aud, repository, ref, workflow}'
-
-      - name: Test Role Assumption with AWS CLI
-        continue-on-error: true
-        env:
-          TOKEN: ${{ steps.get-token.outputs.token }}
-          ROLE_ARN: ${{ inputs.iam-role-arn }}
-          AWS_REGION: ${{ inputs.aws-region }}
-        run: |
-          aws sts assume-role-with-web-identity \
-            --role-arn "$ROLE_ARN" \
-            --role-session-name oidc-trust-check \
-            --web-identity-token "$TOKEN" \
-            --query 'AssumedRoleUser' \
-            --output json
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
-        env:
-            ACTIONS_STEP_DEBUG: true
         with:
-            role-to-assume: ${{ inputs.iam-role-arn }}
-            role-session-name: ${{ inputs.role-session-name }}
-            aws-region: ${{ inputs.aws-region }}
-            audience: ${{ inputs.audience }}
+          role-to-assume: ${{ inputs.iam-role-arn }}
+          role-session-name: ${{ inputs.role-session-name }}
+          aws-region: ${{ inputs.aws-region }}
+          audience: ${{ inputs.audience }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: Terraform Format Check
+        working-directory: ${{ inputs.workdir }}
+        run: terraform fmt -check -recursive -diff
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.workdir }}
+        run: terraform init -upgrade -backend-config=terraform.backend-config.tfvars
+
+      - name: Terraform Validate
+        working-directory: ${{ inputs.workdir }}
+        run: terraform validate
+
+      - name: Check required variables are populated
+        if: inputs.workdir == 'terraform.d'
+        run: |
+          if [ -z "${TF_VAR_admin_cidr:-}" ]; then
+            echo "::error::TF_VAR_admin_cidr is empty. Set the ADMIN_CIDR repository secret to your address in /32 form, for example 203.0.113.42/32."
+            exit 1
+          fi
+          echo "admin_cidr is set."
+
+      - name: Terraform Plan
+        id: tf_plan
+        working-directory: ${{ inputs.workdir }}
+        run: terraform plan -var-file=terraform.tfvars -no-color -out=tf.plan
+
+      - name: Publish plan to job summary
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          {
+            echo "### Terraform plan - \`${{ inputs.workdir }}\`"
+            echo '```terraform'
+            terraform show -no-color tf.plan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.names.outputs.artifact }}
+          path: ${{ inputs.workdir }}/tf.plan
+          retention-days: 1
+          if-no-files-found: error
+
+  apply:
+    needs: plan
+    runs-on: ${{ inputs.runner-group }}
+    environment: ${{ inputs.environment }}
+
+    env:
+      TF_VAR_admin_cidr: ${{ secrets.admin_cidr }}
+
+    outputs:
+      ansible_log_s3_path: ${{ steps.get_ansible_path.outputs.path }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.iam-role-arn }}
+          role-session-name: ${{ inputs.role-session-name }}
+          aws-region: ${{ inputs.aws-region }}
+          audience: ${{ inputs.audience }}
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -144,41 +204,63 @@ jobs:
           terraform_wrapper: false
 
       - name: Terraform Init
-        id: tf_init
-        env:
-          WORKDIR: ${{ inputs.workdir }}
-        run: |
-          terraform init -upgrade -backend-config=terraform.backend-config.tfvars
-        working-directory: ${{ env.WORKDIR }}
+        working-directory: ${{ inputs.workdir }}
+        run: terraform init -upgrade -backend-config=terraform.backend-config.tfvars
 
-      - name: Terraform Validate
-        id: tf_validate
-        env:
-          WORKDIR: ${{ inputs.workdir }}
-        run: terraform validate
-        working-directory: ${{ env.WORKDIR }}
-
-      - name: Terraform Plan
-        id: tf_plan
-        env:
-          WORKDIR: ${{ inputs.workdir }}
-        run: |
-          terraform plan -var-file=terraform.tfvars -no-color -out=tf.plan
-        working-directory: ${{ env.WORKDIR }}
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.plan_artifact }}
+          path: ${{ inputs.workdir }}
 
       - name: Terraform Apply
         id: tf_apply
-        env:
-          WORKDIR: ${{ inputs.workdir }}
+        working-directory: ${{ inputs.workdir }}
         run: terraform apply -no-color tf.plan
-        working-directory: ${{ env.WORKDIR }}
+
+      - name: Smoke test the deployed application
+        if: inputs.smoke-test-output != ''
+        working-directory: ${{ inputs.workdir }}
+        env:
+          OUTPUT_NAME: ${{ inputs.smoke-test-output }}
+          EXPECTED: ${{ inputs.smoke-test-expect }}
+        run: |
+          URL=$(terraform output -raw "$OUTPUT_NAME")
+          echo "Testing $URL"
+
+          for attempt in $(seq 1 60); do
+            BODY=$(curl -fsS --max-time 10 "$URL" 2>/dev/null) && {
+              if [ -z "$EXPECTED" ] || printf '%s' "$BODY" | grep -qF "$EXPECTED"; then
+                echo "Smoke test passed on attempt $attempt"
+                printf '%s\n' "$BODY" | head -20
+                exit 0
+              fi
+              echo "Attempt $attempt: reachable but body did not contain '$EXPECTED'"
+            } || echo "Attempt $attempt: not reachable yet"
+            sleep 10
+          done
+
+          echo "::error::Smoke test failed: $URL did not serve '$EXPECTED' within 10 minutes"
+          TG=$(terraform output -raw target_group_arn 2>/dev/null || true)
+          if [ -n "$TG" ]; then
+            echo "--- target health ---"
+            aws elbv2 describe-target-health --target-group-arn "$TG" \
+              --query 'TargetHealthDescriptions[].[Target.Id,TargetHealth.State,TargetHealth.Reason]' \
+              --output table 2>/dev/null || echo "(target health unavailable)"
+          fi
+          ASG=$(terraform output -raw autoscaling_group_name 2>/dev/null || true)
+          if [ -n "$ASG" ]; then
+            echo "--- recent scaling activity ---"
+            aws autoscaling describe-scaling-activities --auto-scaling-group-name "$ASG" \
+              --max-items 5 --query 'Activities[].[StartTime,StatusCode,Description]' \
+              --output table 2>/dev/null || echo "(activity unavailable)"
+          fi
+          exit 1
 
       - name: Capture terraform outputs
-        id: tf_output
         if: always()
         working-directory: ${{ inputs.workdir }}
-        run: |
-          terraform output -json > terraform-output.json || echo "{}" > terraform-output.json
+        run: terraform output -json > terraform-output.json || echo "{}" > terraform-output.json
 
       - name: Get Ansible log S3 path
         id: get_ansible_path
@@ -191,15 +273,13 @@ jobs:
             S3_PATHS=""
             IFS=',' read -ra KEYS <<< "$ANSIBLE_OUTPUT_KEYS"
             for key in "${KEYS[@]}"; do
-              key=$(echo "$key" | xargs)  # trim whitespace
-              # Validate key name to prevent injection
+              key=$(echo "$key" | xargs)
               if [[ ! "$key" =~ ^[a-zA-Z0-9_-]+$ ]]; then
                 echo "Invalid terraform output key format: ${key}. Skipping."
                 continue
               fi
               if [ -n "$key" ]; then
                 S3_PATH=$(jq -r --arg k "$key" '.[$k].value // ""' terraform-output.json)
-                # Validate S3 path format to prevent injection
                 if [ -n "$S3_PATH" ] && [[ "$S3_PATH" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
                   if [ -z "$S3_PATHS" ]; then
                     S3_PATHS="$S3_PATH"
@@ -214,9 +294,3 @@ jobs:
           else
             echo "path=" >> $GITHUB_OUTPUT
           fi
-
-      - name: Fail job if terraform apply failed
-        if: steps.tf_apply.outcome == 'failure'
-        run: |
-          echo "Terraform apply failed. Check logs above for details."
-          exit 1

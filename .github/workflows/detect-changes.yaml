@@ -1,0 +1,47 @@
+name: Detect foundation changes
+
+on:
+  workflow_call:
+    outputs:
+      foundation:
+        description: Whether terraform.d/foundation has changes in this push
+        value: ${{ jobs.detect.outputs.foundation }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+
+    outputs:
+      foundation: ${{ steps.check.outputs.foundation }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if terraform.d/foundation changed
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base="${{ github.event.before }}"
+          if [[ -z "$base" || "$base" == "0000000000000000000000000000000000000000" ]] \
+             || ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+            base="$(git rev-parse --verify --quiet HEAD~1 || true)"
+          fi
+
+          if [[ -n "$base" ]]; then
+            changed="$(git diff --name-only "$base..HEAD" -- 'terraform.d/foundation/')"
+          else
+            changed="$(git diff-tree --no-commit-id --name-only -r HEAD -- 'terraform.d/foundation/')"
+          fi
+
+          if [[ -n "$changed" ]]; then
+            echo "foundation=true" >> "$GITHUB_OUTPUT"
+            echo "Foundation files changed - foundation will be planned."
+            echo "$changed" | sed 's/^/  /'
+          else
+            echo "foundation=false" >> "$GITHUB_OUTPUT"
+            echo "No foundation changes - skipping foundation."
+          fi

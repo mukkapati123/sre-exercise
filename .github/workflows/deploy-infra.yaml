@@ -1,21 +1,45 @@
 name: Deploy Terraform
- 
+
 on:
   push:
     branches:
-      - SRE-2
- 
+      - main
+
 permissions:
   id-token: write
   contents: write
   pull-requests: write
- 
+
 jobs:
-  deploy-terraform:
+  detect-changes:
+    uses: ./.github/workflows/detect-changes.yaml
+
+  deploy-foundation:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.foundation == 'true'
     uses: ./.github/workflows/reusable-tf-apply.yaml
     with:
       workdir: terraform.d/foundation
       terraform-version: '1.15.9'
       aws-region: eu-west-1
       iam-role-arn: 'arn:aws:iam::524370972027:role/sre-exercise-github-actions'
-    secrets: inherit
+      environment: production
+    secrets:
+      admin_cidr: ${{ secrets.ADMIN_CIDR }}
+
+  deploy-infrastructure:
+    needs: deploy-foundation
+    if: >-
+      !cancelled()
+      && needs.deploy-foundation.result != 'failure'
+    uses: ./.github/workflows/reusable-tf-apply.yaml
+    with:
+      workdir: terraform.d
+      terraform-version: '1.15.9'
+      aws-region: eu-west-1
+      iam-role-arn: 'arn:aws:iam::524370972027:role/sre-exercise-github-actions'
+      environment: production
+      smoke-test-output: alb_url
+      smoke-test-expect: 'Hello, World!'
+    secrets:
+      admin_cidr: ${{ secrets.ADMIN_CIDR }}

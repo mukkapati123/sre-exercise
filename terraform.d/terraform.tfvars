@@ -1,0 +1,8 @@
+aws_region          = "eu-west-1"
+aws_account_id      = "524370972027"
+project_name        = "sre-exercise"
+environment         = "exercise"
+owner               = "SandeepMukkapati"
+key_pair_name       = "sre-exercise-key-pair"
+alert_email         = "v.mukkapati@elsevier.com"
+ansible_repo_branch = "SRE-3"

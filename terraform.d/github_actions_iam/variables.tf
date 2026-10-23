@@ -44,9 +44,3 @@ variable "state_bucket" {
   type        = string
   default     = "sre-exercise-tf-state"
 }
-
-variable "state_lock_table" {
-  description = "DynamoDB table used for state locking. Created outside this configuration"
-  type        = string
-  default     = "terraform-locks"
-}
