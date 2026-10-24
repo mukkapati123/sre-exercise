@@ -7,6 +7,7 @@ approval, applies the saved plan, and tests the public endpoint.
 
 **Start here:** [Architecture](#architecture) ·
 [Repository layout](#repository-layout) ·
+[Making changes](#making-changes) ·
 [Deploy](#deploy-from-a-fresh-clone) ·
 [CI/CD](#github-actions) ·
 [Testing](#test-and-inspect-the-deployment) ·
@@ -14,31 +15,74 @@ approval, applies the saved plan, and tests the public endpoint.
 
 ## Architecture
 
-```text
-Internet users                         Operator's public IPv4 /32
-      | HTTP :80                                   | SSH :22
-      v                                            v
-+--------------------------------------------------------------------+
-| VPC 10.0.0.0/21 -- eu-west-1                                        |
-|                                                                    |
-| Public subnets: 10.0.0.0/24, 10.0.1.0/24                            |
-|   Application Load Balancer                  Bastion (t2.micro)     |
-|           | HTTP :80                             | SSH :22          |
-|           +-------------------+------------------+                 |
-|                               v                                    |
-| Private subnets:      Web Auto Scaling group                        |
-|                       min 1 / desired 1 / max 3                     |
-|                       Amazon Linux 2023, nginx                      |
-|                               |                                    |
-|                 Outbound access through NAT gateways                |
-|                                                                    |
-| Two NAT gateways, one in each public subnet, use the internet gateway|
-+--------------------------------------------------------------------+
-                                |
-                   CPU and agent-collected metrics
-                                v
-                    CloudWatch alarms -> SNS -> email
+### Resource ownership
+
+| Layer | Manages |
+|---|---|
+| Foundation | VPC, public/private subnets, internet gateway, NAT gateways and routes |
+| GitHub Actions IAM | GitHub OIDC provider, deployment role and deployment policies |
+| Application infrastructure | ALB, target group, web ASG, bastion, instance profile and monitoring |
+| Ansible | nginx installation, HTML page, health endpoint and service configuration |
+
+### Network and request paths
+
+```mermaid
+flowchart TB
+    users["Internet users"]
+    operator["Operator<br/>Public IPv4 /32"]
+    external["Package repositories and GitHub"]
+
+    subgraph aws["AWS · eu-west-1"]
+        subgraph vpc["VPC · 10.0.0.0/21"]
+            igw["Internet gateway"]
+            alb["Internet-facing ALB<br/>Public subnets in AZ A and AZ B"]
+
+            subgraph aza["Availability zone A"]
+                subgraph public_a["Public subnet · 10.0.0.0/24"]
+                    bastion["Bastion<br/>t2.micro"]
+                    nat_a["NAT gateway A"]
+                end
+                private_a["Private subnet · 10.0.2.0/24<br/>Web placement"]
+            end
+
+            subgraph azb["Availability zone B"]
+                subgraph public_b["Public subnet · 10.0.1.0/24"]
+                    nat_b["NAT gateway B"]
+                end
+                private_b["Private subnet · 10.0.3.0/24<br/>Web placement"]
+            end
+
+            subgraph azc["Availability zone C"]
+                private_c["Private subnet · 10.0.4.0/24<br/>Not used by the web ASG"]
+            end
+
+            web["Web Auto Scaling group<br/>Amazon Linux 2023 · nginx · t2.micro<br/>Min 1 · Desired 1 · Max 3"]
+            alb -->|"HTTP :80 · health check /health"| web
+            bastion -->|"SSH :22"| web
+            web -.->|"Eligible placement"| private_a
+            web -.->|"Eligible placement"| private_b
+            private_a -->|"Outbound"| nat_a
+            private_b -->|"Outbound"| nat_b
+            private_c -->|"Outbound"| nat_a
+            nat_a --> igw
+            nat_b --> igw
+        end
+
+        cw["CloudWatch<br/>CPU, memory and disk metrics"]
+        sns["SNS topic"]
+    end
+
+    users -->|"HTTP :80 via internet gateway"| alb
+    operator -->|"SSH :22 via internet gateway"| bastion
+    igw --> external
+    web -->|"Metrics"| cw
+    cw -->|"CPU / memory alarms"| sns
+    sns --> email["Confirmed email subscription"]
 ```
+
+Solid arrows show traffic or telemetry; dotted arrows show where the ASG can
+place instances, not additional running servers. The ALB spans both public
+subnets. AZ A/B/C denote the availability zones selected by the foundation.
 
 The foundation provides two public and three private `/24` subnets. The web group
 uses only private subnets in availability zones enabled on the ALB, so each web
@@ -72,31 +116,35 @@ SSM and CloudWatch agent policies; neither uses static AWS credentials.
 ## Repository layout
 
 ```text
-terraform.d/                      Infrastructure root module
-  main.tf                         Calls the child module in ./modules
-  data.tf                         Reads foundation outputs from S3 state
-  provider.tf, versions.tf         Provider configuration and constraints
-  variables.tf, terraform.tfvars   Deployment inputs
-  state.tf                        S3 backend declaration
-  terraform.backend-config.tfvars Backend location
-  outputs.tf                      ALB URL, bastion IP, ASG and target group
-  modules/                        One child module, split by component
-    alb.tf, asg.tf, bastion.tf
-    security_groups.tf, iam.tf, monitoring.tf
-    data.tf, user_data.tf
-    user_data_common.sh.tftpl      SSH configuration and CloudWatch agent
-    user_data_web.sh.tftpl         Ansible installation and ansible-pull
-    variables.tf, outputs.tf, versions.tf
-  foundation/                     Separate root: VPC, subnets and routing
-  github_actions_iam/             Separate root: OIDC provider and deploy role
-ansible.d/
-  ansible.cfg
-  playbooks/web.yml
-  roles/web/                      nginx package, HTML page and health endpoint
-.github/workflows/
-  deploy-infra.yaml               Deployment orchestration
-  detect-changes.yaml             Foundation-only change detection
-  reusable-tf-apply.yaml          Plan, approval, apply and smoke test
+sre-exercise/
+|-- terraform.d/                      Infrastructure root module
+|   |-- main.tf                       Calls ./modules
+|   |-- data.tf                       Reads foundation state
+|   |-- provider.tf, versions.tf      Provider and Terraform requirements
+|   |-- variables.tf, terraform.tfvars
+|   |-- state.tf, terraform.backend-config.tfvars
+|   |-- outputs.tf
+|   |-- modules/                      One child module, split by component
+|   |   |-- alb.tf, asg.tf, bastion.tf
+|   |   |-- security_groups.tf, iam.tf, monitoring.tf
+|   |   |-- data.tf, user_data.tf
+|   |   |-- user_data_common.sh.tftpl  SSH configuration and CloudWatch agent
+|   |   |-- user_data_web.sh.tftpl     Ansible installation and ansible-pull
+|   |   `-- variables.tf, outputs.tf, versions.tf
+|   |-- foundation/                   Separate root: network resources
+|   `-- github_actions_iam/           Separate root: CI identity and policies
+|-- ansible.d/
+|   |-- ansible.cfg
+|   |-- playbooks/web.yml
+|   `-- roles/web/
+|       |-- tasks/main.yml
+|       |-- handlers/main.yml
+|       `-- templates/index.html.j2
+|-- .github/workflows/
+|   |-- deploy-infra.yaml             Deployment orchestration
+|   |-- detect-changes.yaml           Foundation-only change detection
+|   `-- reusable-tf-apply.yaml        Plan, approval, apply and smoke test
+`-- README.md
 ```
 
 Each root module has its own state object:
@@ -142,14 +190,40 @@ uniquely named replacement group first and waits for the configured number of
 its instances to become healthy in the target group. With the defaults, this is
 one instance, with a ten-minute timeout. It then removes the old group.
 
-This uses `create_before_destroy` and `replace_triggered_by`, not an asynchronous
-instance refresh or a provisioner. There is temporary extra capacity during a
-replacement. If creation times out, apply fails and may leave resources requiring
-review; this is not an automatic rollback system. Both groups share the target
-group during cutover, rather than switching traffic atomically.
+`replace_triggered_by` ties replacement to the launch template version;
+`create_before_destroy` keeps the existing group until the replacement is ready.
+Both groups share the target group during cutover, with temporary extra capacity.
+A timeout fails apply and requires inspection of any partially created resources;
+Terraform does not automatically roll the release back.
 
 The ALB checks `/health` for HTTP 200. The smoke test separately checks the home
 page for `Hello, World!`.
+
+## Making changes
+
+Create a feature branch, update the relevant files, review the Terraform plan,
+and open a pull request.
+
+| Change | Where | Deployment effect |
+|---|---|---|
+| Page content | [HTML template](ansible.d/roles/web/templates/index.html.j2) | Ansible hash changes user data; replaces the web ASG |
+| Instance type | `instance_type` in [root inputs](terraform.d/terraform.tfvars) | Updates both bastion and web instance type; the web ASG is replaced |
+| Scaling bounds or initial capacity | `asg_min_size`, `asg_max_size`, `asg_desired_capacity` in root inputs | Updates the ASG in place |
+| CPU target and CPU alarm | `cpu_alarm_threshold` in root inputs | Updates the scaling policy and notification alarm |
+| Memory alarm or email address | `memory_alarm_threshold`, `alert_email` in root inputs | Updates monitoring; a new email subscription needs confirmation |
+| Operator SSH address | GitHub Actions secret `ADMIN_CIDR`, or local `TF_VAR_admin_cidr` | Updates bastion SSH ingress on the next apply |
+| Instance bootstrap | [user-data templates](terraform.d/modules/) | Web user data replaces the ASG; shared user data also replaces the bastion |
+| Network resources | [foundation root](terraform.d/foundation/) | Deploys foundation before infrastructure; review network replacement effects |
+
+Defaults are declared in [root variables](terraform.d/variables.tf). Override
+deployment-specific settings in root inputs, and change resource behaviour in
+the child module. Keep the foundation, root `state_bucket` input, IAM inputs and
+backend configurations consistent if changing the state location.
+
+Ansible changes must be available on `ansible_repo_branch` when instances boot.
+For the normal merge-to-main flow, both Terraform and Ansible changes are merged
+together before deployment. A plan's content hash triggers replacement but does
+not pin the later Git checkout to a commit.
 
 ## Deploy from a fresh clone
 
@@ -243,11 +317,10 @@ not enable email delivery.
 Use a feature branch and pull request for changes, then **squash merge** with the
 PR title as the squash commit title. On pushes to `main`, the workflow checks the
 latest commit title and skips deployment when it starts with `chore:`.
-Other prefixes, including `feat:`, `fix:`, `docs:` and breaking-change forms such
-as `feat!:`, are allowed. This is a literal prefix check: `chore(scope):` and
-`chore!:` are not excluded. Use `chore:` for changes that should not deploy.
-Avoid direct pushes or multi-commit pushes to `main`: the condition checks only
-the push's latest commit title.
+Use `chore:` for documentation-only maintenance that should not deploy, and
+`feat:` or `fix:` for deployable changes. The check is literal: other prefixes,
+including scoped or breaking-change `chore` forms, are not excluded.
+Only the push's latest commit title is checked.
 
 This is not currently a pull-request validation workflow. Run formatting,
 validation and plan locally before merging.
@@ -291,8 +364,8 @@ Detect foundation changes
                                                    ALB smoke test
 ```
 
-Foundation runs only when its directory changes. Infrastructure is planned on
-every push, after foundation succeeds or is skipped. A run deploying both roots
+For eligible commits, foundation runs only when its directory changes.
+Infrastructure is planned after foundation succeeds or is skipped. A run deploying both roots
 has two approval gates. The IAM root is applied separately.
 
 Plan and apply use separate jobs. The plan is published to the job summary and
