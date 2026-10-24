@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   detect-changes:
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore:') }}
     uses: ./.github/workflows/detect-changes.yaml
 
   deploy-foundation:
@@ -28,10 +29,11 @@ jobs:
       admin_cidr: ${{ secrets.ADMIN_CIDR }}
 
   deploy-infrastructure:
-    needs: deploy-foundation
+    needs: [detect-changes, deploy-foundation]
     if: >-
       !cancelled()
-      && needs.deploy-foundation.result != 'failure'
+      && needs.detect-changes.result == 'success'
+      && (needs.deploy-foundation.result == 'success' || needs.deploy-foundation.result == 'skipped')
     uses: ./.github/workflows/reusable-tf-apply.yaml
     with:
       workdir: terraform.d
