@@ -58,6 +58,15 @@ resource "aws_vpc_security_group_egress_rule" "bastion_to_web_ssh" {
   to_port                      = 22
 }
 
+resource "aws_vpc_security_group_egress_rule" "bastion_to_web_http" {
+  security_group_id            = aws_security_group.bastion.id
+  description                  = "HTTP to the web tier for manual checks"
+  referenced_security_group_id = aws_security_group.web.id
+  ip_protocol                  = "tcp"
+  from_port                    = 80
+  to_port                      = 80
+}
+
 resource "aws_vpc_security_group_egress_rule" "bastion_https" {
   security_group_id = aws_security_group.bastion.id
   description       = "HTTPS out for SSM and package updates"

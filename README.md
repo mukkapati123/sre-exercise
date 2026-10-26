@@ -58,7 +58,7 @@ flowchart TB
 
             web["Web Auto Scaling group<br/>Amazon Linux 2023 · nginx · t2.micro<br/>Min 1 · Desired 1 · Max 3"]
             alb -->|"HTTP :80 · health check /health"| web
-            bastion -->|"SSH :22"| web
+            bastion -->|"SSH :22 / HTTP :80 manual checks"| web
             web -.->|"Eligible placement"| private_a
             web -.->|"Eligible placement"| private_b
             private_a -->|"Outbound"| nat_a
@@ -104,9 +104,9 @@ path. Web instances have no public IP.
 
 The exercise asks for HTTP from the bastion only and also requires an ALB.
 The web ingress rules allow both security groups so the ALB can forward requests
-and perform health checks. Bastion outbound rules currently permit SSH to the web
-tier and HTTPS to external services; direct HTTP checks from the bastion would
-also need an outbound TCP 80 rule.
+and perform health checks. Bastion outbound rules permit SSH and HTTP to the web
+security group, plus HTTPS to external services. HTTP from the bastion is for
+direct checks over the instances' private IPs; users access the page through the ALB.
 
 SSH uses an existing EC2 key pair. The bootstrap scripts disable root and password
 SSH login, require IMDSv2, and install the CloudWatch agent. Root volumes are
